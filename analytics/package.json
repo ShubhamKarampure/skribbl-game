@@ -1,0 +1,16 @@
+{
+    "name": "scribble-analytics-consumer",
+    "version": "1.0.0",
+    "type": "module",
+    "main": "consumer.js",
+    "scripts": {
+        "start": "node consumer.js"
+    },
+    "dependencies": {
+        "amqplib": "^0.10.x",
+        "cors": "^2.8.5",
+        "dotenv": "^16.x.x",
+        "express": "^5.1.0",
+        "mongoose": "^7.x.x || ^8.x.x"
+    }
+}
