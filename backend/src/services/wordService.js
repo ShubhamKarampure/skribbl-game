@@ -27,7 +27,7 @@ export const getWordChoices = async (count = 3) => {
     const randomIndex = Math.floor(Math.random() * tempPool.length);
     choices.push(tempPool.splice(randomIndex, 1)[0]);
   }
-  // Optional: To prevent immediate reuse, remove chosen words from `currentWordPool`
+  // Optional: To prevent immediate reuse, remove chosen words from currentWordPool
   // choices.forEach(choice => {
   //   const indexInMainPool = currentWordPool.indexOf(choice);
   //   if (indexInMainPool > -1) currentWordPool.splice(indexInMainPool, 1);
@@ -35,10 +35,35 @@ export const getWordChoices = async (count = 3) => {
   return choices;
 };
 
-export const generateHint = (word) => {
+export const generateHint = (word, revealCount = 1) => {
   if (!word) return "";
-  // Replace letters with underscore, keep spaces and other symbols
-  return word.replace(/[a-zA-Z]/g, '_').split('').join(' ');
+  const letters = word.split('');
+  const letterIndices = [];
+
+  // Collect indices of letters (a-z, A-Z)
+  letters.forEach((char, idx) => {
+    if (/[a-zA-Z]/.test(char)) letterIndices.push(idx);
+  });
+
+  // Determine how many letters to reveal (at least 1, at most all)
+  const toReveal = Math.min(revealCount, letterIndices.length);
+
+  // Randomly pick indices to reveal
+  const revealed = new Set();
+  while (revealed.size < toReveal) {
+    const randomIdx = letterIndices[Math.floor(Math.random() * letterIndices.length)];
+    revealed.add(randomIdx);
+  }
+
+  // Build the hint string
+  const hint = letters.map((char, idx) => {
+    if (/[a-zA-Z]/.test(char) && !revealed.has(idx)) {
+      return '_';
+    }
+    return char;
+  });
+
+  return hint.join(' ').replace(/ /g, ' ');
 };
 
 export const addWordsToPool = (newWordsArray) => {

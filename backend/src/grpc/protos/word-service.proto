@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package wordservice;
+
+service WordService {
+  // Get a list of word choices for the drawing game
+  rpc GetWordChoices(WordChoicesRequest) returns (WordChoicesResponse) {}
+  
+  // Generate a hint for a word
+  rpc GenerateHint(HintRequest) returns (HintResponse) {}
+  
+  // Add new words to the word pool
+  rpc AddWordsToPool(AddWordsRequest) returns (AddWordsResponse) {}
+}
+
+message WordChoicesRequest {
+  int32 count = 1; // Number of word choices to return
+}
+
+message WordChoicesResponse {
+  repeated string words = 1; // List of word choices
+}
+
+message HintRequest {
+  string word = 1;        // The word to generate a hint for
+  int32 reveal_count = 2; // Number of letters to reveal
+}
+
+message HintResponse {
+  string hint = 1; // The generated hint
+}
+
+message AddWordsRequest {
+  repeated string words = 1; // Words to add to the pool
+}
+
+message AddWordsResponse {
+  int32 pool_size = 1; // The updated size of the word pool
+}

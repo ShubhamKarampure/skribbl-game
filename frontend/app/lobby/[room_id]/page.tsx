@@ -120,9 +120,9 @@ export default function LobbyPage() {
       newCreatorId?: string | null
       players: PlayerInLobby[]
     }) => {
+      console.log("Player left:", data)
       if (data.roomId === roomId) {
         setRoomDetails((prev) => {
-          if (!prev) return null
 
           // Update the creatorId if provided
           const updatedCreatorId = data.newCreatorId !== undefined ? data.newCreatorId : prev.creatorId

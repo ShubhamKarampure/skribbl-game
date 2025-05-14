@@ -7,33 +7,60 @@ import config from '../config/index.js';
 import createError from 'http-errors';
 import { publishAnalyticsEvent } from '../queue/analyticsProducer.js';
 
-const electNewLeader = async (roomId) => {
+const electNewLeader  = async (roomId) => {
   try {
-    const room = await Room.findOne({ roomId });
-    if (!room || room.players.length === 0) {
-      logger.warn(`[Room ${roomId}] Cannot elect leader: Room not found or empty.`);
+    const room = await Room.findOne({ roomId }).populate({
+      path: 'players',
+      model: User,
+      select: 'userId username', // Fetch users to get their IDs for comparison
+      localField: 'players', // This should be the field in Room model
+      foreignField: 'userId' // This should be the field in User model
+    });
+
+    if (!room) {
+      logger.warn(`[Room ${roomId}] Cannot elect leader: Room not found.`);
       return null;
     }
 
-    const newLeaderId = room.players[0];
+    if (!room.players || room.players.length === 0) {
+      logger.warn(`[Room ${roomId}] Cannot elect leader: Room is empty.`);
+      room.creatorId = null; // Ensure creatorId is cleared if room becomes empty
+      await room.save();
+      return null;
+    }
+
+   
+    const sortedPlayers = [...room.players].sort((a, b) => {
+      if (a.userId > b.userId) return -1; // For descending sort by userId
+      if (a.userId < b.userId) return 1;
+      return 0;
+    });
+
+    const newLeader = sortedPlayers[0]; // The one with the "highest" ID
+    const newLeaderId = newLeader.userId;
+
+    if (room.creatorId === newLeaderId) {
+        logger.info(`[Room ${roomId}] ${newLeaderId} is already the creator. No change needed.`);
+        return newLeaderId;
+    }
+
     room.creatorId = newLeaderId;
     await room.save();
 
-    logger.info(`[Room ${roomId}] New creator elected: ${newLeaderId}`);
+    logger.info(`[Room ${roomId}] New creator elected (Bully-like): ${newLeaderId} (${newLeader.username})`);
 
     const io = getIo();
     if (io) {
-      const newLeaderUser = await User.findOne({ userId: newLeaderId }).select('userId username');
       io.to(roomId).emit('roomCreatorChanged', {
         roomId,
         newCreatorId: newLeaderId,
-        newCreatorUsername: newLeaderUser?.username || null,
+        newCreatorUsername: newLeader.username || null,
       });
     }
 
     return newLeaderId;
   } catch (error) {
-    logger.error(`[Room ${roomId}] Error in electNewLeader: ${error.message}`, error);
+    logger.error(`[Room ${roomId}] Error in electNewLeaderUsingBully: ${error.message}`, error);
     return null;
   }
 };
@@ -173,13 +200,8 @@ export const leaveRoom = async (roomId, userId) => {
 
   const io = getIo();
 
-  if (room.players.length === 0) {
-    await Room.deleteOne({ roomId });
-    logger.info(`Room ${roomId} deleted as no players remain.`);
-  } else {
-    await room.save();
-  }
-
+  await room.save();
+  
   // Notify clients
   if (wasPlayerInRoom && io) {
     io.to(roomId).emit('playerLeft', {

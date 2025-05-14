@@ -9,10 +9,11 @@ import connectDB from './src/config/db.js';
 import logger from './src/utils/logger.js';
 import { initSocketIO } from './src/socket/socketManager.js';
 import { connectRabbitMQ, setupRabbitMQ, closeRabbitMQConnection } from './src/queue/queueManager.js';
-// import { startGrpcServer } from './src/grpc/server.js'; // Optional
+import { startWordServiceServer } from './src/grpc/wordServiceServer.js';
 
 const PORT = config.port || 5000;
 const server = http.createServer(app);
+const WORDPORT = process.env.WORD_SERVICE_PORT ? parseInt(process.env.WORD_SERVICE_PORT, 10) : 50051;
 
 let pubClient;
 let subClient;
@@ -46,10 +47,11 @@ async function startServer() {
       logger.warn('RabbitMQ URL not configured. Queue layer will be non-functional.');
     }
 
-    // if (config.grpc.enabled) startGrpcServer();
+    logger.info(`Starting Word Service on port ${WORDPORT}...`);
+    startWordServiceServer(WORDPORT);
 
-    console.log(`Starting server on port ${PORT}...`);
-server.listen(PORT, () => {
+  console.log(`Starting server on port ${PORT}...`);
+  server.listen(PORT, () => {
   logger.info(`Server running on port ${PORT} in ${config.env} mode.`);
   if (pubClient && subClient) logger.info('Socket.IO using Redis adapter.');
 });

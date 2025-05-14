@@ -4,7 +4,7 @@ import config from '../config/index.js';
 
 const roomSchema = new mongoose.Schema({
   roomId: { type: String, unique: true, required: true, index: true, default: () => `room_${generateUniqueId()}` },
-  creatorId: { type: String, ref: 'User', required: true }, 
+  creatorId: { type: String, ref: 'User' }, 
   players: [{ type: String, ref: 'User' }], 
   maxPlayers: { type: Number, default: config.gameplay.maxPlayersPerRoom, min: 2, max: 20 },
   settings: {

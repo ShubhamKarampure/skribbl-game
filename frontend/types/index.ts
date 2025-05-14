@@ -174,4 +174,31 @@ export interface SocketContextType {
     emitWithAck: <T = any>(event: string, data: any) => Promise<T>;
 }
 
+// src/types/game.ts (or your chosen path)
+
+// Base structure for all messages/events in the feed
+export interface FeedMessageBase {
+  id: string; // Unique key for React rendering
+  userId: string;
+  username: string;
+  timestamp: string; // ISO Date string, standardized to serverTimestamp
+  vectorTimestamp: Record<string, number>; // Assuming this is part of all messages
+}
+
+// For player chat messages or system announcements
+export interface ChatFeedMessageClient extends FeedMessageBase {
+  type: "chat" | "system"; // 'system' for system messages, 'chat' for player chat
+  message: string;
+}
+
+export interface GuessFeedMessageClient extends FeedMessageBase {
+  type: "guess";
+  message: string; // The content of the guess
+  isCorrect: boolean;
+  pointsAwarded: number;
+}
+
+export type FeedMessage = ChatFeedMessageClient | GuessFeedMessageClient;
+
+
 export type DisplayableMessage = (ChatMessage | GuessEvent) & { displayType: 'chat' | 'guess' | 'system' };

@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useState, ReactNode, useCallback, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { useUser } from './UserContext'; // To get userId for auth
+import { useUser } from './UserContext'; 
 
 const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL!;
 
@@ -19,14 +19,9 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   
-  // Use a ref to track if we've already created a socket for this user
   const socketInitializedRef = useRef<string | null>(null);
 
   useEffect(() => {
-    // Only create a new socket if:
-    // 1. We have a user with userId
-    // 2. We don't already have a socket
-    // 3. The current user is different from the one we created a socket for
     if (user?.userId && (!socket || socketInitializedRef.current !== user.userId)) {
       // Cleanup any existing socket first
       if (socket) {
@@ -41,7 +36,6 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         reconnectionAttempts: 5,
         reconnectionDelay: 3000,
         auth: { userId: user.userId },
-        // Add transports to prefer WebSocket
         transports: ['websocket', 'polling'],
       });
 
@@ -62,7 +56,6 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       
       newSocket.on('gameError', (data: { message: string }) => {
         console.error('SocketContext: Received gameError:', data.message);
-        // Use a toast notification library here for better UX
         alert(`Server error: ${data.message}`);
       });
 
@@ -75,10 +68,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       socketInitializedRef.current = null;
     }
     
-    // Cleanup function
     return () => {
-      // Only run cleanup if component is truly unmounting
-      // We use a nested check to avoid unnecessary disconnections
       if (socket && typeof window !== 'undefined') {
         const unmounting = !document.body.contains(document.getElementById('socket-provider'));
         if (unmounting) {
@@ -90,7 +80,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         }
       }
     };
-  }, [user?.userId]); // Only depend on userId, not the entire user object or socket
+  }, [user?.userId]);
 
   // Helper for emitting with acknowledgement
   const emitWithAck = useCallback(async <T, R>(eventName: string, data: T): Promise<R> => {
@@ -101,7 +91,6 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       }
       
       socket.emit(eventName, data, (response: R) => {
-        // Assuming backend callback has { error: string } or { success: true, ...data }
         const res = response as any; // Type assertion
         if (res.error) {
           console.error(`Error from server on event ${eventName}:`, res.error);

@@ -83,11 +83,9 @@ export default function Home() {
       const readyUser = await ensureUserReady();
       
       if (readyUser?.userId) {
-        // Making the API call to join the room
         const response = await apiClient.post(`/rooms/${id}/join`, { userId: readyUser.userId });
         console.log("Joined room:", response.data);
         
-        // Assuming response contains updated room data or a success message
         setLoadingJoin(false);
         if (readyUser && id.trim()) {
           setShowLobbyModal(false);

@@ -11,6 +11,7 @@ interface RoomInfoPanelProps {
   roomId: string
   isCurrentUserCreator: boolean
   onStartGame: () => void
+  onRestartGame?: () => void
   isLoading: boolean
 }
 
@@ -19,16 +20,15 @@ export default function RoomInfoPanel({
   roomId,
   isCurrentUserCreator,
   onStartGame,
+  onRestartGame,
   isLoading,
 }: RoomInfoPanelProps) {
-  // Helper function to get creator username
   const getCreatorUsername = () => {
     if (!roomDetails) return "N/A"
     const creator = roomDetails.players.find((p) => p.userId === roomDetails.creatorId)
     return creator ? creator.username : "N/A"
   }
 
-  // Minimum players required to start the game
   const minPlayersToStart = Number(process.env.NEXT_PUBLIC_MIN_PLAYERS_TO_START) || 2
 
   return (
@@ -51,10 +51,7 @@ export default function RoomInfoPanel({
                 variant="ghost"
                 size="sm"
                 className="p-1 h-auto text-white hover:bg-blue-500/30"
-                onClick={() => {
-                  navigator.clipboard.writeText(roomId)
-                  // You could add a toast notification here
-                }}
+                onClick={() => navigator.clipboard.writeText(roomId)}
               >
                 Copy
               </Button>
@@ -87,7 +84,7 @@ export default function RoomInfoPanel({
         </div>
       </motion.div>
 
-      {/* Start Game Button (for creator only) */}
+      {/* Start Game Button */}
       {isCurrentUserCreator && roomDetails.status === "waiting" && (
         <motion.div
           className="mt-auto"
@@ -120,7 +117,7 @@ export default function RoomInfoPanel({
         </motion.div>
       )}
 
-      {/* Waiting message (for non-creator) */}
+      {/* Waiting message for non-creator */}
       {!isCurrentUserCreator && roomDetails.status === "waiting" && (
         <motion.div
           className="mt-auto"
@@ -141,7 +138,7 @@ export default function RoomInfoPanel({
         </motion.div>
       )}
 
-      {/* Status message (when not waiting) */}
+      {/* Game status display */}
       {roomDetails.status !== "waiting" && (
         <motion.div
           className="mt-auto"
@@ -152,6 +149,28 @@ export default function RoomInfoPanel({
           <div className="p-4 bg-gradient-to-r from-gray-600 to-gray-700 text-white rounded-lg text-center shadow-md">
             Game is {roomDetails.status}
           </div>
+        </motion.div>
+      )}
+
+      {/* Restart Game Button */}
+      {isCurrentUserCreator && roomDetails.status === "finished" && (
+        <motion.div
+          className="mt-2"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.4 }}
+          whileHover={{ scale: 1.03 }}
+          whileTap={{ scale: 0.97 }}
+        >
+          <AnimatedGradientBorder borderWidth={2} animationDuration={5}>
+            <Button
+              onClick={onStartGame}
+              disabled={isLoading}
+              className="w-full py-5 text-xl bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 shadow-lg flex items-center justify-center gap-2 rounded-xl"
+            >
+              <Play className="h-6 w-6" /> Restart Game
+            </Button>
+          </AnimatedGradientBorder>
         </motion.div>
       )}
     </div>

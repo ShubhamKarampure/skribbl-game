@@ -35,6 +35,7 @@ export default function GamePlayArea({
   isMyTurnToDraw,
   currentUser,
   currentColor,
+  timeLeft,
   brushSize,
   onColorChange,
   onBrushSizeChange,
@@ -44,6 +45,7 @@ export default function GamePlayArea({
   const drawingCanvasRef = useRef<DrawingCanvasRef>(null);
 
   const canControlDrawing = isMyTurnToDraw && clientView === "drawing" && activeRound?.status === "drawing";
+
 
   // Callback for actions originating from the canvas (lines, fills)
   const handleLocalCanvasAction = useCallback((action: DrawingAction) => {
@@ -63,22 +65,32 @@ export default function GamePlayArea({
     drawingCanvasRef.current?.triggerLocalClear();
   }, [canControlDrawing, onEmitDrawAction, drawingCanvasRef]);
 
+  
+  
+  const getWordText = (word: unknown) => {
+    if (typeof word === "string") return word;
+    if (typeof word === "object" && word !== null && "text" in word) {
+      return (word as any).text;
+    }
+    return null;
+  };
+
   return (
     <motion.div className="lg:col-span-2 flex flex-col space-y-2 sm:space-y-4 h-full">
       <div className="bg-white rounded-lg shadow p-2 sm:p-4 flex justify-between items-center border border-blue-100">
-        <WordDisplay
-          word={
-            clientView === "drawing" || clientView === "round_summary"
-              ? activeRound?.actualWord ?? null
-              : activeRound?.wordHint ?? null
-          }
-          isDrawing={isMyTurnToDraw && clientView === "drawing"}
-          isRoundOver={clientView === "round_summary"}
-          actualWordAtRoundEnd={activeRound?.actualWord ?? null}
-        />
+      <WordDisplay
+  word={
+    clientView === "drawing" || clientView === "round_summary"
+      ? getWordText(activeRound?.wordToGuess)
+      : getWordText(activeRound?.wordHint)
+  }
+  isDrawing={isMyTurnToDraw && clientView === "drawing"}
+  isRoundOver={clientView === "round_summary"}
+  actualWordAtRoundEnd={getWordText(activeRound?.wordToGuess)}
+/>
         <GameTimer
           key={activeRound?.roundId || "timer"}
-          timeLeft={activeRound?.timeLeftInRound || 0}
+          timeLeft={timeLeft || 0}
           totalTime={activeRound?.totalDrawTimeForRound || 80}
         />
       </div>

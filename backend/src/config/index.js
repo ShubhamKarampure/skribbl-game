@@ -28,7 +28,13 @@ const config = {
   gameplay: {
     minPlayersToStart: 2,
     maxPlayersPerRoom: 12,
-  }
+  },
+  wordService: {
+    host: process.env.WORD_SERVICE_HOST || 'localhost',
+    port: parseInt(process.env.WORD_SERVICE_PORT || '50051', 10),
+    timeout: parseInt(process.env.WORD_SERVICE_TIMEOUT || '5000', 10),
+    reconnectInterval: parseInt(process.env.WORD_SERVICE_RECONNECT_INTERVAL || '10000', 10),
+  },
 };
 
 export default config;

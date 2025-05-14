@@ -42,7 +42,7 @@ interface RawEventsResponse {
 }
 
 ``
-const API_BASE_URL = "http://localhost:3001/api/analytics";
+const API_BASE_URL = process.env.NEXT_PUBLIC_ANALYTIC_URL;
 
 export default function DashboardPage() {
   // State for selected dates

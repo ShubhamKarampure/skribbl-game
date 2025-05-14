@@ -4,12 +4,41 @@ import Round from '../models/round.js';
 import User from '../models/user.js';
 import logger from '../utils/logger.js';
 import { getIo } from '../socket/socketManager.js';
-import * as wordService from './wordService.js';
+import * as wordService from '../grpc/wordService.js'
 import * as scoreService from './scoreService.js';
 import config from '../config/index.js';
 import createError from 'http-errors';
+import { publishAnalyticsEvent } from '../queue/analyticsProducer.js';
 
-const gameTimers = new Map(); // roomId -> NodeJS.Timeout instance
+const gameTimers = new Map(); // For setTimeout objects
+const periodicTimerIntervals = new Map();
+const gameEndTimes = new Map(); // roomId -> endTimeInMs
+
+export const emitGameTimerUpdate = (roomId) => {
+  const io = getIo();
+  if (!io) {
+    logger.warn(`[Room ${roomId}] IO object not available in emitGameTimerUpdate. Skipping update.`);
+    return;
+  }
+
+  const endTime = gameEndTimes.get(roomId);
+  let timeLeftInSeconds = 0;
+
+  // DETAILED LOGGING START
+  if (endTime) {
+    const currentTime = Date.now();
+    const timeLeftMs = Math.max(0, endTime - currentTime);
+    timeLeftInSeconds = Math.floor(timeLeftMs / 1000);
+    
+  } else {
+    logger.warn(`[TIMER_DEBUG Room ${roomId}] No endTime found for room when emitGameTimerUpdate called.`);
+  }
+  // DETAILED LOGGING END
+  io.to(roomId).emit('gameTimerUpdate', {
+    roomId,
+    timeLeftInRound: timeLeftInSeconds
+  });
+};
 
 export const initializeGame = async (roomId) => {
   const room = await Room.findOne({ roomId }).populate({
@@ -28,6 +57,15 @@ export const initializeGame = async (roomId) => {
     throw createError(400, `Not enough players to start (min ${config.gameplay.minPlayersToStart}).`);
   }
 
+  // Delete any existing rounds for this room
+  const deletedRounds = await Round.deleteMany({ roomId });
+  logger.info(`[Room ${roomId}] Deleted ${deletedRounds.deletedCount} previous rounds.`);
+  
+
+  room.currentRoundNumber = 0;
+  room.currentDrawerId = null;
+  room.currentWord = null;
+  room.wordPool = [];
   room.status = 'playing';
   room.currentRoundNumber = 0;
   room.gameHistoryRounds = [];
@@ -36,6 +74,13 @@ export const initializeGame = async (roomId) => {
   await room.save();
 
   await scoreService.setupScoresForGame(roomId, room.players.map(p => ({ userId: p.userId, username: p.username })));
+
+  publishAnalyticsEvent('game_started', {
+    roomId,
+    settings: room.settings,
+    playerCount: room.players.length,
+    playerIds: room.players.map(p => p.userId),
+  });
 
   logger.info(`Game initialized for room ${roomId}. Draw order: ${room.playerDrawOrder.join(', ')}`);
   const io = getIo();
@@ -111,6 +156,31 @@ export const startNextRound = async (roomId) => {
 
   logger.info(`Round ${room.currentRoundNumber} starting in room ${roomId}. Drawer: ${drawerUser.username} (ID: ${drawerId}).`);
   const io = getIo();
+
+  const newRoundData = {
+    roomId: room.roomId,
+    currentRoundNumber: room.currentRoundNumber,
+    totalRounds: room.settings.rounds,
+    drawer: {
+      userId: drawerUser.userId,
+      username: drawerUser.username
+    },
+    drawTime: room.settings.drawTime,
+    currentRoundId: round.roundId || round._id.toString()
+  };
+
+  if (room.currentRoundNumber > 1) {
+    io.to(roomId).emit('newRoundStarting', newRoundData);
+    logger.info(`Emitted 'newRoundStarting' (round ${newRoundData.currentRoundNumber}, ID ${newRoundData.currentRoundId}) to room ${roomId}. Drawer: ${drawerUser.username}`);
+  }
+
+  publishAnalyticsEvent('round_started', {
+    roomId,
+    roundNumber: room.currentRoundNumber,
+    drawerId,
+    drawerUsername: drawerUser.username,
+    totalRounds: room.settings.rounds,
+  });
   
   console.log('START NEXT ROUND DEBUG:', {
     drawerUser: {
@@ -131,9 +201,9 @@ export const startNextRound = async (roomId) => {
       setTimeout(() => {
         io.to(drawerUser.socketId).emit('yourTurnToDraw', wordChoicePayload, (ackResponse) => {
           if (ackResponse !== 'received') {
-        logger.warn(`Drawer ${drawerUser.username} did not acknowledge word choices.`);
+            logger.warn(`Drawer ${drawerUser.username} did not acknowledge word choices.`);
           } else {
-        logger.info(`Drawer ${drawerUser.username} acknowledged word choices.`);
+            logger.info(`Drawer ${drawerUser.username} acknowledged word choices.`);
           }
         });
       }, 2000);
@@ -157,7 +227,7 @@ export const handleWordSelection = async (roomId, userId, selectedWord, clientVe
     throw createError(403, 'Not allowed to select word or game not active.');
   }
   if (!selectedWord || typeof selectedWord !== 'string' || selectedWord.trim() === '') {
-      throw createError(400, 'Invalid word selected.');
+    throw createError(400, 'Invalid word selected.');
   }
 
   room.currentWord = selectedWord.trim();
@@ -174,19 +244,42 @@ export const handleWordSelection = async (roomId, userId, selectedWord, clientVe
 
   logger.info(`Drawer ${userId} in room ${roomId} selected word: ${room.currentWord}. Drawing phase begins.`);
   const io = getIo();
+  const hintResponse = await wordService.generateHint(room.currentWord);
+const hint = hintResponse.hint;
+
   io.to(roomId).emit('drawingPhaseStarted', {
     roomId,
+    wordToGuess: selectedWord, 
     drawerId: userId,
-    wordHint: wordService.generateHint(room.currentWord),
+    wordHint: hint,
     drawTime: room.settings.drawTime,
     currentRoundId: currentRoundEntry.roundId,
   });
 
+  // Clear any existing timers for this room
   if (gameTimers.has(roomId)) clearTimeout(gameTimers.get(roomId));
+  if (periodicTimerIntervals.has(roomId)) clearInterval(periodicTimerIntervals.get(roomId));
+
+  // Calculate absolute end time and store it
+  const drawTimeMs = room.settings.drawTime * 1000;
+  const endTime = Date.now() + drawTimeMs;
+  gameEndTimes.set(roomId, endTime);
+  
+  // Set the timer for round end
   gameTimers.set(roomId, setTimeout(() => {
     logger.info(`Round timer expired for room ${roomId}.`);
     endRound(roomId, currentRoundEntry.roundId, 'timer_expired');
-  }, room.settings.drawTime * 1000));
+  }, drawTimeMs));
+
+  // Start periodic updates
+  const updateIntervalId = setInterval(() => {
+    emitGameTimerUpdate(roomId);
+  }, 1000); 
+  periodicTimerIntervals.set(roomId, updateIntervalId);
+  logger.info(`[Room ${roomId}] Started periodic game timer update interval.`);
+
+  // Emit initial timer update
+  emitGameTimerUpdate(roomId);
 };
 
 export const saveDrawingAction = async (roomId, roundId, userId, drawingActionPayload) => {
@@ -230,11 +323,11 @@ export const processGuess = async (roomId, roundId, userId, guessPayload) => {
 
   const currentRound = await Round.findOne({ roundId, roomId, status: 'drawing'});
   if (!currentRound) {
-      return { error: "Guess rejected: Round not found or not active for guessing."};
+    return { error: "Guess rejected: Round not found or not active for guessing."};
   }
   // Check if user already guessed correctly this round
   if (currentRound.guessEvents.some(g => String(g.userId) === String(userId) && g.isCorrect)) {
-      return { error: "You have already guessed correctly.", alreadyGuessed: true };
+    return { error: "You have already guessed correctly.", alreadyGuessed: true };
   }
 
   const isCorrect = guessPayload.guess.trim().toLowerCase() === room.currentWord.toLowerCase();
@@ -246,6 +339,7 @@ export const processGuess = async (roomId, roundId, userId, guessPayload) => {
     vectorTimestamp: guessPayload.vectorTimestamp,
     clientTimestamp: guessPayload.clientTimestamp, // Optional
     isCorrect,
+    serverTimestamp: new Date()
   };
 
   if (isCorrect) {
@@ -254,6 +348,7 @@ export const processGuess = async (roomId, roundId, userId, guessPayload) => {
     await scoreService.awardPoints(userId, roomId, pointsAwarded, 'guesser');
     await scoreService.awardPoints(room.currentDrawerId, roomId, scoreService.POINTS_FOR_DRAWER_CORRECT_GUESS, 'drawer');
     logger.info(`User ${user.username} guessed correctly in room ${roomId}. Word: ${room.currentWord}`);
+    
   }
 
   currentRound.guessEvents.push(guessEventData);
@@ -263,10 +358,11 @@ export const processGuess = async (roomId, roundId, userId, guessPayload) => {
   io.to(roomId).emit('playerGuessed', {
     roomId, roundId,
     userId, username: user.username,
-    guess: guessPayload.guess, // Send the raw guess for display
+    guess: guessPayload.guess,
     isCorrect,
     pointsAwarded: isCorrect ? pointsAwarded : 0,
-    vectorTimestamp: guessPayload.vectorTimestamp, // Echo back for client ordering if needed
+    vectorTimestamp: guessPayload.vectorTimestamp,
+    serverTimestamp: guessEventData.serverTimestamp.toISOString(), 
   });
 
   if (isCorrect) {
@@ -281,46 +377,53 @@ export const processGuess = async (roomId, roundId, userId, guessPayload) => {
 };
 
 export const processChatMessage = async (roomId, roundId, userId, chatPayload) => {
-    // chatPayload = { message: string, vectorTimestamp, clientTimestamp, messageType? }
-    const room = await Room.findOne({ roomId });
-    const user = await User.findOne({userId}).select('username');
+  // chatPayload = { message: string, vectorTimestamp, clientTimestamp, messageType? }
+  const room = await Room.findOne({ roomId });
+  const user = await User.findOne({userId}).select('username');
 
-    if(!room || !user) return { error: "Cannot send chat: room or user not found."};
-    if(room.status !== 'playing' && room.status !== 'waiting') return {error: "Chat not allowed in current room state."};
+  if(!room || !user) return { error: "Cannot send chat: room or user not found."};
+  if(room.status !== 'playing' && room.status !== 'waiting') return {error: "Chat not allowed in current room state."};
 
-    const currentRound = roundId ? await Round.findOne({roundId, roomId}) : null;
-    const chatData = {
-        userId,
-        username: user.username,
-        message: chatPayload.message,
-        vectorTimestamp: chatPayload.vectorTimestamp,
-        clientTimestamp: chatPayload.clientTimestamp,
-        messageType: chatPayload.messageType || 'player_chat',
-    };
+  const currentRound = roundId ? await Round.findOne({roundId, roomId}) : null;
+  const chatData = {
+    userId,
+    username: user.username,
+    message: chatPayload.message,
+    vectorTimestamp: chatPayload.vectorTimestamp,
+    clientTimestamp: chatPayload.clientTimestamp,
+    messageType: chatPayload.messageType || 'player_chat',
+  };
 
-    if(currentRound && room.status === 'playing') {
-        currentRound.chatMessages.push(chatData);
-        await currentRound.save();
-    } else if (room.status === 'waiting') {
-        // For waiting room, maybe store chat on Room document or a separate collection
-        // For simplicity, not storing pre-game chat in this example, just broadcasting
-        logger.info(`[Room ${roomId}] Lobby chat from ${user.username}: ${chatPayload.message}`);
-    }
+  if(currentRound && room.status === 'playing') {
+    currentRound.chatMessages.push(chatData);
+    await currentRound.save();
+  } else if (room.status === 'waiting') {
+    logger.info(`[Room ${roomId}] Lobby chat from ${user.username}: ${chatPayload.message}`);
+  }
 
-
-    const io = getIo();
-    io.to(roomId).emit('newChatMessage', {
-        roomId, roundId,
-        ...chatData
-    });
-    return chatData;
+  const io = getIo();
+  io.to(roomId).emit('newChatMessage', {
+    roomId, roundId,
+    ...chatData
+  });
+  return chatData;
 };
 
-
 export const endRound = async (roomId, roundId, reason) => {
+  // Clear all timers and intervals
   if (gameTimers.has(roomId)) {
     clearTimeout(gameTimers.get(roomId));
     gameTimers.delete(roomId);
+  }
+  
+  if (periodicTimerIntervals.has(roomId)) {
+    clearInterval(periodicTimerIntervals.get(roomId));
+    periodicTimerIntervals.delete(roomId);
+  }
+  
+  // Also clear the end time
+  if (gameEndTimes.has(roomId)) {
+    gameEndTimes.delete(roomId);
   }
 
   const room = await Room.findOne({ roomId });
@@ -351,20 +454,31 @@ export const endRound = async (roomId, roundId, reason) => {
   setTimeout(async () => {
     const freshRoomState = await Room.findOne({roomId}); // Re-fetch to ensure status is current
     if (freshRoomState.status === 'playing') { // Check if game hasn't been ended by other means (e.g. player disconnect)
-        if (freshRoomState.currentRoundNumber >= freshRoomState.settings.rounds) {
-          await endGame(roomId, 'all_rounds_completed');
-        } else {
-          await startNextRound(roomId);
-        }
+      if (freshRoomState.currentRoundNumber >= freshRoomState.settings.rounds) {
+        await endGame(roomId, 'all_rounds_completed');
+      } else {
+        await startNextRound(roomId);
+      }
     }
-  }, 4000); // 5-second delay before next round or game end
+  }, 4000); // 4-second delay before next round or game end
 };
 
 export const endGame = async (roomId, reason) => {
+  // Clear all timers and stored values for this room
   if (gameTimers.has(roomId)) {
-      clearTimeout(gameTimers.get(roomId));
-      gameTimers.delete(roomId);
+    clearTimeout(gameTimers.get(roomId));
+    gameTimers.delete(roomId);
   }
+  
+  if (periodicTimerIntervals.has(roomId)) {
+    clearInterval(periodicTimerIntervals.get(roomId));
+    periodicTimerIntervals.delete(roomId);
+  }
+  
+  if (gameEndTimes.has(roomId)) {
+    gameEndTimes.delete(roomId);
+  }
+  
   const room = await Room.findOneAndUpdate(
     { roomId, status: 'playing' }, // Only end if playing
     { $set: { status: 'finished', currentDrawerId: null, currentWord: null } },
@@ -386,41 +500,41 @@ export const endGame = async (roomId, reason) => {
 };
 
 export const handlePlayerDisconnectInGame = async (roomId, userId) => {
-    const room = await Room.findOne({ roomId });
-    if (!room || room.status !== 'playing') {
-      // If room not playing or not found, roomService.leaveRoom handles general departure
-      return;
-    }
+  const room = await Room.findOne({ roomId });
+  if (!room || room.status !== 'playing') {
+    // If room not playing or not found, roomService.leaveRoom handles general departure
+    return;
+  }
 
-    logger.info(`Player ${userId} disconnected from active game in room ${roomId}.`);
-    const wasDrawer = String(room.currentDrawerId) === String(userId);
+  logger.info(`Player ${userId} disconnected from active game in room ${roomId}.`);
+  const wasDrawer = String(room.currentDrawerId) === String(userId);
 
-    // Update playerDrawOrder: remove the disconnected player
-    room.playerDrawOrder = room.playerDrawOrder.filter(pid => String(pid) !== String(userId));
+  // Update playerDrawOrder: remove the disconnected player
+  room.playerDrawOrder = room.playerDrawOrder.filter(pid => String(pid) !== String(userId));
 
-    if (room.players.length -1 < config.gameplay.minPlayersToStart) { // Check remaining players after this one leaves
-        logger.info(`Not enough players in room ${roomId} after disconnect. Ending game.`);
-        await room.save(); // save updated draw order first
-        await endGame(roomId, 'not_enough_players');
-    } else if (wasDrawer) {
-        logger.info(`Drawer ${userId} disconnected from room ${roomId}. Ending current round.`);
-        const currentRound = await Round.findOne({roomId, currentRoundNumber: room.currentRoundNumber, status: 'drawing'});
-        if (currentRound) {
-            await room.save(); // save updated draw order
-            await endRound(roomId, currentRound.roundId, 'drawer_left');
-        } else {
-            // If no active round for the drawer, perhaps just proceed to next round logic
-            // This case should be rare if status is 'playing' and drawer was set.
-            logger.warn(`Drawer ${userId} left, but no active drawing round found. Proceeding with game state.`);
-            await room.save();
-            // Potentially call startNextRound if appropriate, or let endRound's timeout handle it.
-        }
+  if (room.players.length -1 < config.gameplay.minPlayersToStart) { // Check remaining players after this one leaves
+    logger.info(`Not enough players in room ${roomId} after disconnect. Ending game.`);
+    await room.save(); // save updated draw order first
+    await endGame(roomId, 'not_enough_players');
+  } else if (wasDrawer) {
+    logger.info(`Drawer ${userId} disconnected from room ${roomId}. Ending current round.`);
+    const currentRound = await Round.findOne({roomId, currentRoundNumber: room.currentRoundNumber, status: 'drawing'});
+    if (currentRound) {
+      await room.save(); // save updated draw order
+      await endRound(roomId, currentRound.roundId, 'drawer_left');
     } else {
-        // Player was not the drawer, game continues. Just save updated draw order.
-        await room.save();
-        logger.info(`Player ${userId} (not drawer) left room ${roomId}. Game continues.`);
-        const io = getIo();
-        // Notify clients about player list change, gameService.leaveRoom handles DB player list
-        io.to(roomId).emit('playerLeftMidGame', { roomId, userId, newPlayerDrawOrder: room.playerDrawOrder });
+      // If no active round for the drawer, perhaps just proceed to next round logic
+      // This case should be rare if status is 'playing' and drawer was set.
+      logger.warn(`Drawer ${userId} left, but no active drawing round found. Proceeding with game state.`);
+      await room.save();
+      // Potentially call startNextRound if appropriate, or let endRound's timeout handle it.
     }
+  } else {
+    // Player was not the drawer, game continues. Just save updated draw order.
+    await room.save();
+    logger.info(`Player ${userId} (not drawer) left room ${roomId}. Game continues.`);
+    const io = getIo();
+    // Notify clients about player list change, gameService.leaveRoom handles DB player list
+    io.to(roomId).emit('playerLeftMidGame', { roomId, userId, newPlayerDrawOrder: room.playerDrawOrder });
+  }
 };
